@@ -723,7 +723,10 @@ fn remote_ref_sha(path: &Path, git_ref: &str) -> Result<Option<String>> {
 }
 
 fn remote_exact_ref_sha(path: &Path, git_ref: &str) -> Result<Option<String>> {
-    let out = git_output(path, &["ls-remote", "origin", git_ref])?;
+    // An exact pattern does not match the peeled `<ref>^{}` line, so ask for it
+    // too; otherwise an annotated tag resolves to the tag object, not its commit.
+    let peeled_ref = format!("{git_ref}^{{}}");
+    let out = git_output(path, &["ls-remote", "origin", git_ref, &peeled_ref])?;
     Ok(parse_remote_exact_ref_sha(&out, git_ref))
 }
 
@@ -1645,5 +1648,40 @@ cccccccccccccccccccccccccccccccccccccccc\trefs/tags/release^{}
             Some("local-only"),
             Some(&sha)
         ));
+    }
+
+    #[test]
+    fn annotated_tag_ref_is_current() {
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin");
+        let work = tmp.path().join("work");
+        init_repo(&origin);
+        test_git(
+            &origin,
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=Test User",
+                "tag",
+                "-a",
+                "v1.0.0",
+                "-m",
+                "v1.0.0",
+            ],
+        );
+        test_git(&origin, &["tag", "v1.0.0-light"]);
+        let url = format!("file://{}", origin.display());
+        test_git(tmp.path(), &["clone", "-q", &url, work.to_str().unwrap()]);
+        test_git(&work, &["checkout", "-q", "v1.0.0"]);
+
+        let sha = current_sha(&work).unwrap();
+        assert_eq!(
+            remote_ref_sha(&work, "v1.0.0").unwrap().as_deref(),
+            Some(sha.as_str())
+        );
+        assert!(ref_is_current(&work, "v1.0.0", None, Some(&sha)));
+        assert!(ref_is_current(&work, "refs/tags/v1.0.0", None, Some(&sha)));
+        assert!(ref_is_current(&work, "v1.0.0-light", None, Some(&sha)));
     }
 }
